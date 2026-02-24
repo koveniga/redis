@@ -1,0 +1,21 @@
+# {{ansible_managed}}
+{% set rotate = redis_server.logrotate %}
+{{rotate.rotate_filemask}} {
+    {{rotate.period}}
+    rotate {{rotate.count}}
+{% if rotate.copytruncate %}
+    copytruncate
+{% endif %}
+{% if rotate.delaycompress %}
+    delaycompress
+{% endif %}
+{% if rotate.compress %}
+    compress
+{% endif %}
+{% if rotate.notifempty %}
+    notifempty
+{% endif %}
+{% if rotate.missingok %}
+    missingok
+{% endif %}
+}

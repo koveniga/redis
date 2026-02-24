@@ -1,0 +1,112 @@
+- name: set some facts
+  set_fact:
+    cluster_commands_file: "/tmp/redis_cluster_commands.{{hostvars[master_host].redis_server.listen_port}}.sh"
+    redis_connect_ip: "{{(hostvars[master_host]['redis_server']['bind']|split(' '))[0]}}"
+    auth_string: "{{' -a '+hostvars[master_host]['redis_server']['passauth_password'] if hostvars[master_host]['redis_server']['passauth_password']!='' else ''}}"
+    cluster_nodes: []
+  tags:
+    - init_cluster
+    - meet_cluster
+    - manage_cluster
+    - setup_cluster_commands
+
+- name: execute redis nodes command
+  shell:
+    cmd: "redis-cli -h {{redis_connect_ip}} -p {{hostvars[master_host]['redis_server']['listen_port']}}{{auth_string}} cluster nodes"
+  args:
+    executable: bash
+  check_mode: False
+  changed_when: False
+  register: "cluster_nodes"
+  tags:
+    - init_cluster
+    - meet_cluster
+    - manage_cluster
+    - setup_cluster_commands
+
+- name: show nodes info
+  debug:
+    msg:
+      - "{{cluster_nodes.stdout_lines}}"
+  when:
+    - cluster_nodes!=[]
+  tags:
+    - init_cluster
+    - meet_cluster
+    - manage_cluster
+
+- name: create cluster commands file
+  template:
+    src: "cluster_commands.sh.j2"
+    dest: "{{cluster_commands_file}}"
+    owner: "root"
+    group: "root"
+    mode: "0700"
+  tags:
+    - init_cluster
+    - meet_cluster
+    - manage_cluster
+    - setup_cluster_commands
+
+- name: execute cluster commands file (show info)
+  shell:
+    cmd: "{{cluster_commands_file}} get_cluster_info"
+  args:
+    executable: bash
+  register: "redis_cluster_info_command"
+  tags:
+    - init_cluster
+    - meet_cluster
+    - manage_cluster
+
+- name: show cluster info
+  debug:
+    msg: "{{redis_cluster_info_command.stdout_lines}}"
+  when:
+    - ansible_check_mode==False
+  tags:
+    - init_cluster
+    - meet_cluster
+    - manage_cluster
+
+- name: execute cluster commands file (create cluster)
+  shell:
+    cmd: "{{cluster_commands_file}} create_cluster"
+  args:
+    executable: bash
+  loop: "{{clusters_init_execute}}"
+  register: "redis_cluster_create_command"
+  when:
+    - '"cluster_known_nodes:1" in redis_cluster_info_command.stdout_lines'
+  tags:
+    - init_cluster
+    - manage_cluster
+
+- name: show created info
+  debug:
+    msg: "{{redis_cluster_create_command.stdout_lines}}"
+  when:
+    - redis_cluster_create_command.changed
+  tags:
+    - init_cluster
+    - manage_cluster
+
+- name: meet nodes to cluster
+  shell:
+    cmd: "{{cluster_commands_file}} meet_new_nodes"
+  args:
+    executable: bash
+  when:
+    - '"cluster_known_nodes:1" not in redis_cluster_info_command.stdout_lines'
+  tags:
+    - meet_cluster
+    - manage_cluster
+
+- name: remove cluster commands file
+  file:
+    path: "{{cluster_commands_file}}"
+    state: absent
+  tags:
+    - init_cluster
+    - meet_cluster
+    - manage_cluster

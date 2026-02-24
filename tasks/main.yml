@@ -1,0 +1,162 @@
+- name: setup staring values
+  set_fact:
+    clusters_groups_played: []
+    clusters_init_execute: []
+  tags:
+    - always
+
+- name: collect info for uniq cluster groups and nodes
+  set_fact:
+    clusters_groups_played: "{{ clusters_groups_played + [hostvars[item]['redis_server']['cluster']['ansible_groupname']]  }}"
+    clusters_init_execute: "{{ clusters_init_execute + [item] }}"
+  loop: "{{ ansible_play_hosts_all }}"
+  when:
+    - hostvars[item]['redis_server'] is defined
+    - hostvars[item]['redis_server']['cluster'] is defined
+    - hostvars[item]['redis_server']['cluster']['enabled'] is defined
+    - hostvars[item]['redis_server']['cluster']['enabled']
+    - hostvars[item]['redis_server']['cluster']['ansible_groupname'] not in clusters_groups_played
+  run_once: True
+  tags:
+    - always
+
+- name: include vars for os independent
+  include_vars: "{{ ansible_facts['os_family'] }}.yml"
+  tags:
+    - always
+
+- name: debug
+  debug:
+    msg:
+    - "clusters_groups_played:"
+    - "{{clusters_groups_played}}"
+    - "clusters_init_execute"
+    - "{{clusters_init_execute}}"
+  run_once: True
+  tags:
+    - never
+    - debug
+
+- name: install redis
+  package:
+    name: "{{ redis_server.package_name | default(redis_package_name) }}"
+    state: "present"
+    update_cache: True
+  tags:
+    - install_instance
+
+- name: setup redis unit file
+  template:
+    src: "unit.j2"
+    dest: "/usr/lib/systemd/system/{{redis_server['systemd']['service_name'] | default(redis_service_name) }}.service"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  notify: "systemd daemon reload"
+  tags:
+    - unit
+    - install_instance
+
+- name: setup redis config file
+  template:
+    src: "redis.conf.j2"
+    dest: "{{redis_server.config_file}}"
+    owner: "root"
+    group: "redis"
+    mode: "0640"
+  notify: "restart redis server"
+  tags:
+    - config
+    - install_instance
+
+- name: create redis workdir
+  file:
+    path: "{{redis_server.workdir}}"
+    state: "directory"
+    owner: "redis"
+    group: "redis"
+    mode: "0750"
+  tags:
+    - install_instance
+
+- name: setup logrotate file
+  template:
+    src: "redis.logrotate.j2"
+    dest: "/etc/logrotate.d/{{redis_server.logrotate.filename}}"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  when:
+    - redis_server['logrotate']['enabled']
+  tags:
+    - logrotate
+
+- name: create redis logfile
+  file:
+    path: "{{redis_server['logfile']}}"
+    state: "touch"
+    owner: "redis"
+    group: "redis"
+    mode: "0644"
+  changed_when: False
+  tags:
+    - install_instance
+
+- name: remove logrotate file (its disabled)
+  file:
+    path: "/etc/logrotate.d/{{redis_server.logrotate.filename}}"
+    state: absent
+  when:
+    - redis_server['logrotate']['enabled']==False
+  tags:
+    - logrotate
+
+- name: start and enabled redis
+  systemd:
+    daemon_reload: True
+    name: "{{redis_server['systemd']['service_name'] | default(redis_service_name) }}"
+    state: "started"
+    enabled: True
+  ignore_errors: "{{ansible_check_mode}}"
+  tags:
+    - start_redis
+    - install_instance
+
+- name: stop redis server
+  systemd:
+    name: "{{redis_server['systemd']['service_name'] | default(redis_service_name) }}"
+    state: "stopped"
+  tags:
+    - never
+    - stop_redis
+    - remove_redis_data
+
+- name: shutdown all redis instances
+  shell:
+    cmd: "/usr/libexec/redis-shutdown"
+  args:
+    executable: bash
+  tags:
+    - never
+    - stop_redis_all
+
+- name: manage cluster
+  include_tasks: "manage_cluster.yml"
+  loop: "{{ clusters_init_execute }}"
+  loop_control:
+    loop_var: "master_host"
+  when:
+    - inventory_hostname == master_host
+  tags:
+    - init_cluster
+    - meet_cluster
+    - manage_cluster
+    - setup_cluster_commands
+
+- name: erase redis instance
+  file:
+    path: "{{redis_server.workdir}}"
+    state: absent
+  tags:
+    - never
+    - remove_redis_data

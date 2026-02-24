@@ -1,0 +1,9 @@
+- name: "systemd daemon reload"
+  systemd:
+    daemon_reload: True
+
+- name: restart redis server
+  systemd:
+    name: "{{redis_server['systemd']['service_name'] | default(redis_service_name) }}"
+    state: "restarted"
+  ignore_errors: "{{ansible_check_mode}}"  

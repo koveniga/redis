@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+set -e
+
+{% set config = redis_server %}
+{% set redis_ip = (config['bind']|split(' '))[0] %}
+function create_cluster {
+{% set cluster = config['cluster'] %}
+    echo 'yes' | redis-cli -h {{redis_ip}} -p {{config.listen_port}} --cluster create \
+{% for node in vars.groups[cluster.ansible_groupname] %}
+{#
+# Здесь есть проблема с тем, что используется ansible_host
+# Нельзя использовать host_vars[node].redis_server.bind, т.к. не она раскрывается, если указана как (hostvars[inventory_hostname].ansible_host) вложенная переменная
+# Пока оставляю так, потому что не думаю, что случится такое, что ansible_host (то, как мы катаем хост) будет отличаться от IP, который слушает Redis
+#}
+        {{hostvars[node].ansible_host}}:{{hostvars[node].redis_server.listen_port}} \
+{% endfor %}
+      --cluster-replicas {{cluster.replicas}} \
+{% if config['passauth_password']!="" %}
+      -a {{config['passauth_password']}} \
+{% endif %}
+      --cluster-yes
+}
+
+function get_cluster_info {
+{% if config['passauth_password']=="" %}
+    redis-cli -h {{redis_ip}} -p {{config.listen_port}} CLUSTER INFO
+{% else %}
+    redis-cli -h {{redis_ip}} -p {{config.listen_port}} -a {{config['passauth_password']}} CLUSTER INFO
+{% endif %}
+}
+
+function meet_new_nodes {
+{# чтобы функция не могла быть с пустым телом #}
+  echo "" >> /dev/null
+{% set nodes_and_ports_in_repo = namespace(value="") %}
+{% for node in vars.groups[cluster.ansible_groupname] %}
+{%    set nodes_and_ports_in_repo.value = nodes_and_ports_in_repo.value ~ hostvars[node].ansible_host ~ ':' ~ hostvars[node].redis_server.listen_port ~ ',' %}
+{% endfor %}
+{% set nodes_and_ports_already_in_cluster = namespace(value = "") %}
+{% if cluster_nodes!=[] %}
+{%    for redis_node in cluster_nodes.stdout_lines %}
+{%        set currently_node_string=(((redis_node|split(' '))[1])|split('@'))[0] %}
+{%        set nodes_and_ports_already_in_cluster.value = nodes_and_ports_already_in_cluster.value ~currently_node_string ~ ',' %}
+{%    endfor %}
+{%    set nodes_and_ports_in_repo_list = nodes_and_ports_in_repo.value|split(',') %}
+{%    set nodes_and_ports_already_in_cluster_list = nodes_and_ports_already_in_cluster.value|split(',') %}
+{%    set differe = nodes_and_ports_in_repo_list|difference(nodes_and_ports_already_in_cluster_list) %}
+{%    for keypair in differe %}
+  echo "Send MEET to {{keypair}}" 
+{%        if config['passauth_password']=="" %}
+              redis-cli -h {{redis_ip}} -p {{config.listen_port}} CLUSTER MEET {{(keypair|split(':'))[0]}} {{(keypair|split(':'))[1]}}
+{%        else %}
+              redis-cli -h {{redis_ip}} -p {{config.listen_port}} -a {{config['passauth_password']}} CLUSTER MEET {{(keypair|split(':'))[0]}} {{(keypair|split(':'))[1]}}
+{%        endif %}
+{%    endfor %}
+{% endif %}
+}
+
+$1
